@@ -38,7 +38,9 @@ export default function OutputTabs({
     {
       status: "complete",
       total_pages: jobResult.total_pages,
-      overall_confidence: jobResult.overall_confidence,
+      overall_extraction_signal:
+        jobResult.overall_extraction_signal ?? jobResult.overall_confidence,
+      confidence_calibrated: jobResult.confidence_calibrated ?? false,
       review_blocks: allBlocks
         .filter((block) => block.flags?.includes("needs_review"))
         .map(({ id, type, page, confidence, flags }) => ({ id, type, page, confidence, flags })),
@@ -270,6 +272,16 @@ export default function OutputTabs({
                         <ol className="mb-2 list-decimal pl-6">{children}</ol>
                       ),
                       li: ({ children }) => <li className="mb-1">{children}</li>,
+                      img: ({ src, alt }) => {
+                        if (typeof src !== "string" || !src.trim()) return null;
+                        return (
+                          <img
+                            src={src}
+                            alt={alt || "Document image"}
+                            className="my-2 max-h-96 max-w-full rounded border border-slate-200 object-contain"
+                          />
+                        );
+                      },
                       pre: ({ children }) => (
                         <pre className="my-2 overflow-x-auto rounded bg-slate-100 p-3">
                           {children}

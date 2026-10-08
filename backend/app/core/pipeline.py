@@ -151,6 +151,8 @@ async def run_pipeline_job(job_id: str, file_path: str, filename: str):
             "file_size": file_size,
             "total_pages": total_pages,
             "overall_confidence": round(overall_conf, 2),
+            "overall_extraction_signal": round(overall_conf, 2),
+            "confidence_calibrated": False,
             "overall_confidence_level": get_confidence_level(overall_conf),
             "created_at": datetime.datetime.utcnow().isoformat() + "Z",
             "processing_time_seconds": elapsed_total,

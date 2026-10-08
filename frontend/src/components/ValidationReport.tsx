@@ -1,7 +1,7 @@
 "use client";
 
 import React from "react";
-import { CheckCircle2, XCircle, ShieldCheck, AlertTriangle, ArrowRight, Play } from "lucide-react";
+import { CheckCircle2, XCircle, ShieldCheck, AlertTriangle, Play } from "lucide-react";
 import { ValidationReport as ValidationReportType } from "@/types";
 
 interface ValidationReportProps {
@@ -22,7 +22,7 @@ export default function ValidationReport({
       <div className="bg-white rounded-lg border border-slate-200 p-6 mb-6">
         <div className="flex items-center space-x-3 text-slate-700">
           <div className="w-4 h-4 rounded-full border-2 border-slate-900 border-t-transparent animate-spin" />
-          <span className="text-sm font-semibold">Running 5-point security & file integrity validation checks...</span>
+          <span className="text-sm font-semibold">Checking file format, size, integrity, structural safety, and configured antivirus...</span>
         </div>
       </div>
     );
@@ -46,18 +46,22 @@ export default function ValidationReport({
           <div
             key={idx}
             className={`p-3 rounded border text-xs flex items-start space-x-3 transition ${
-              check.passed
+              check.passed === true
                 ? "bg-slate-50 border-slate-200 text-slate-800"
+                : check.passed === null
+                ? "bg-amber-50 border-amber-200 text-amber-900"
                 : "bg-rose-50 border-rose-200 text-rose-900"
             }`}
           >
-            {check.passed ? (
+            {check.passed === true ? (
               <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
+            ) : check.passed === null ? (
+              <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
             ) : (
               <XCircle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
             )}
             <div className="flex-1">
-              <span className="font-semibold text-slate-900 mr-2">{check.name}:</span>
+              <span className="font-semibold text-slate-900 mr-2">{check.name}{check.passed === null ? " (not run)" : ""}:</span>
               <span className="text-slate-700">{check.message}</span>
             </div>
           </div>

@@ -8,13 +8,22 @@ from PIL import Image
 import pymupdf as fitz
 
 from app.config import (
+    ANTIVIRUS_MODE,
     ALLOWED_EXTENSIONS,
+    CLAMD_HOST,
+    CLAMD_PORT,
+    CLAMD_TIMEOUT_SECONDS,
     MAGIC_BYTES_MAP,
     MAX_FILE_SIZE_BYTES,
     MAX_ARCHIVE_UNCOMPRESSED_BYTES,
     MAX_IMAGE_PIXELS,
     MAX_PAGES,
     UPLOADS_DIR
+)
+from app.core.antivirus import (
+    AntivirusUnavailableError,
+    MalwareDetectedError,
+    scan_with_clamd,
 )
 
 def sanitize_filename(filename: str) -> str:
@@ -25,12 +34,13 @@ def validate_uploaded_file(
     file_bytes: bytes, original_filename: str, *, store: bool = True
 ) -> Dict[str, Any]:
     """
-    Performs 5 strict security & validation checks:
+    Performs structural validation and the configured antivirus scan:
     1. Extension & Format check (magic bytes matching)
     2. Size check (<= 50 MB)
     3. Corruption check (file parses)
-    4. Security scan (PDF JS/launch, DOCX/XLSX macros/external links/zip-bombs, Formula injection)
-    5. Storage assignment (UUID)
+    4. Structural threat checks (active PDF actions, OOXML macros, archive expansion)
+    5. Optional or required ClamAV scan, according to configured policy
+    6. Storage assignment (UUID)
     Returns structured report with pass/fail per check.
     """
     checks = []
@@ -280,9 +290,49 @@ def validate_uploaded_file(
             "message": "File appears corrupted or unreadable."
         })
 
-    # Add Security Scan status
+    antivirus_check = {
+        "name": "Antivirus Scan",
+        "passed": None,
+        "status": "disabled",
+        "message": "Antivirus scanning is disabled; structural checks only were performed.",
+    }
+    if ANTIVIRUS_MODE != "disabled":
+        try:
+            scanner_result = scan_with_clamd(
+                file_bytes,
+                CLAMD_HOST,
+                CLAMD_PORT,
+                CLAMD_TIMEOUT_SECONDS,
+            )
+            antivirus_check.update(
+                {
+                    "passed": True,
+                    "status": "clean",
+                    "message": f"ClamAV scan passed: {scanner_result}.",
+                }
+            )
+        except MalwareDetectedError as error:
+            antivirus_check.update(
+                {"passed": False, "status": "infected", "message": str(error)}
+            )
+            security_passed = False
+            is_valid = False
+        except AntivirusUnavailableError as error:
+            fail_closed = ANTIVIRUS_MODE == "required"
+            antivirus_check.update(
+                {
+                    "passed": False if fail_closed else None,
+                    "status": "unavailable",
+                    "message": str(error),
+                }
+            )
+            if fail_closed:
+                security_passed = False
+                is_valid = False
+
+    # Add structural security scan status. Antivirus results are reported separately.
     if security_passed:
-        sec_msg = "Security scan passed. No embedded scripts, macros, or threats found."
+        sec_msg = "Structural security checks passed."
         if security_messages:
             sec_msg += " (" + "; ".join(security_messages) + ")"
         checks.append({
@@ -296,6 +346,7 @@ def validate_uploaded_file(
             "passed": False,
             "message": "Security threat detected: " + "; ".join(security_messages)
         })
+    checks.append(antivirus_check)
 
     # Store file under UUID if valid
     saved_path = None

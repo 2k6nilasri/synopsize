@@ -29,6 +29,8 @@ export interface DocumentBlock {
   content: string;
   confidence: number;
   confidence_level: ConfidenceLevel;
+  confidence_basis?: "ocr_engine_score" | "heuristic_extractor_estimate";
+  confidence_calibrated?: boolean;
   extractor: string;
   source_reference: string;
   bbox_unit?: string;
@@ -44,11 +46,11 @@ export interface DocumentBlock {
   flags?: string[];
   metadata?: {
     chart_type?: string;
-    series?: any[];
+    series?: { name: string; data?: number[]; values?: number[] }[];
     latex?: string;
     rows?: number;
     columns?: number;
-    raw_table?: any[][];
+    raw_table?: unknown[][];
     sheet_name?: string;
   };
 }
@@ -85,8 +87,9 @@ export interface PipelineStage {
 
 export interface ValidationCheck {
   name: string;
-  passed: boolean;
+  passed: boolean | null;
   message: string;
+  status?: "disabled" | "unavailable" | "clean" | "infected";
 }
 
 export interface ValidationReport {
@@ -106,6 +109,8 @@ export interface JobResult {
   file_size: number;
   total_pages: number;
   overall_confidence: number;
+  overall_extraction_signal?: number;
+  confidence_calibrated?: boolean;
   overall_confidence_level: ConfidenceLevel;
   created_at: string;
   processing_time_seconds: number;

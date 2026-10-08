@@ -3,7 +3,7 @@
 import React, { Suspense } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { FileText, Wrench, FolderOpen, Settings, ShieldAlert, Trash2 } from "lucide-react";
+import { FileText, Wrench, FolderOpen, Settings, Trash2 } from "lucide-react";
 
 interface NavbarProps {
   overallConfidence?: number;
@@ -73,12 +73,15 @@ function NavbarContent({
           })}
         </nav>
 
-        {/* Right Action & Confidence Score Badge */}
+        {/* Right Action & Extraction Signal Badge */}
         <div className="flex items-center space-x-3">
           {overallConfidence !== undefined && (
-            <div className={`flex items-center space-x-1.5 px-3 py-1 rounded text-xs font-semibold border ${confBg}`}>
+            <div
+              title="Mean extractor-provided signal; it is not a calibrated probability of correctness."
+              className={`flex items-center space-x-1.5 px-3 py-1 rounded text-xs font-semibold border ${confBg}`}
+            >
               <span className="w-2 h-2 rounded-full bg-current" />
-              <span>Score: {(overallConfidence * 100).toFixed(0)}%</span>
+              <span>Extraction signal: {(overallConfidence * 100).toFixed(0)}%</span>
             </div>
           )}
 
@@ -106,4 +109,3 @@ export default function Navbar(props: NavbarProps) {
     </Suspense>
   );
 }
-

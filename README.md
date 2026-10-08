@@ -68,6 +68,45 @@ export it. The API removes expired uploads, job results, and tool outputs at
 startup and hourly, using the configured retention period. Correction and audit
 records are retained separately.
 
+## Confidence evaluation and security
+
+Block confidence values are displayed as **extraction signals**, not as
+probabilities that the content is correct. Tesseract signals come from its OCR
+recognition output; most other extractors currently provide heuristic estimates.
+All blocks explicitly report `confidence_calibrated: false` until evaluated
+against labeled examples.
+
+To evaluate extractor scores against ground-truth text, create a UTF-8 JSONL
+file with one record per block:
+
+```json
+{"extractor":"Tesseract OCR","confidence":0.91,"reference":"Revenue: 125","prediction":"Revenue: 125"}
+{"extractor":"PyMuPDF Text Engine","confidence":0.88,"reference":"Net income 42","prediction":"Net income 47"}
+```
+
+Run the evaluation from `backend`:
+
+```powershell
+..\venv\Scripts\python.exe -m app.core.evaluation .\labeled-evaluation.jsonl
+```
+
+The report includes exact-match rate, word/character error rates, Brier score,
+and expected calibration error overall and per extractor. Calibration is only
+meaningful for representative labeled data; the tool does not make scores
+reliable for documents outside the evaluation set.
+
+Upload checks include file signatures, archive expansion and document-structure
+checks. They are not a malware scan. Local development defaults to antivirus
+mode `disabled` and explicitly reports that the antivirus scan was not run.
+Set `SYNOPSIZE_ANTIVIRUS_MODE=optional` to use ClamAV when available, or
+`required` to reject uploads unless ClamAV returns a clean result. The
+`docker-compose.yml` deployment runs a ClamAV sidecar and uses required mode;
+the backend container also drops Linux capabilities, uses a read-only root
+filesystem, and has CPU, memory, process-count, and temporary-storage limits.
+The container boundary limits service-level impact, but this setup does not
+run every document in its own disposable sandbox. Use a dedicated, patched
+worker/container boundary for high-risk, multi-tenant production workloads.
+
 For the UI, install the frontend dependencies in `frontend` and run
 `npm run dev`. The API base URL currently defaults to `http://127.0.0.1:8000`.
 

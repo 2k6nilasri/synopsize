@@ -25,3 +25,8 @@ security:
     - http://localhost:3002
     - http://127.0.0.1:3002
   rate_limit_per_minute: 120
+  antivirus:
+    mode: disabled
+    host: 127.0.0.1
+    port: 3310
+    timeout_seconds: 15

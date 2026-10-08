@@ -43,6 +43,25 @@ RETENTION_CLEANUP_INTERVAL_SECONDS = int(
     SETTINGS["retention"]["cleanup_interval_seconds"]
 )
 EXTRACTOR_TIMEOUT_SECONDS = int(SETTINGS["processing"]["extractor_timeout_seconds"])
+ANTIVIRUS_SETTINGS = SETTINGS["security"].get("antivirus", {})
+ANTIVIRUS_MODE = os.environ.get(
+    "SYNOPSIZE_ANTIVIRUS_MODE",
+    str(ANTIVIRUS_SETTINGS.get("mode", "disabled")),
+).lower()
+CLAMD_HOST = os.environ.get(
+    "SYNOPSIZE_CLAMD_HOST",
+    str(ANTIVIRUS_SETTINGS.get("host", "127.0.0.1")),
+)
+CLAMD_PORT = int(os.environ.get(
+    "SYNOPSIZE_CLAMD_PORT",
+    ANTIVIRUS_SETTINGS.get("port", 3310),
+))
+CLAMD_TIMEOUT_SECONDS = float(ANTIVIRUS_SETTINGS.get("timeout_seconds", 15))
+
+if ANTIVIRUS_MODE not in {"disabled", "optional", "required"}:
+    raise ValueError(
+        "SYNOPSIZE_ANTIVIRUS_MODE must be disabled, optional, or required."
+    )
 
 ALLOWED_EXTENSIONS = {
     ".pdf", ".png", ".jpg", ".jpeg", ".tif", ".tiff", ".heic",

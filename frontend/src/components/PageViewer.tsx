@@ -1,8 +1,8 @@
 "use client";
 
-import React, { useState } from "react";
+import React from "react";
 import { DocumentPage, DocumentBlock, ConfidenceLevel } from "@/types";
-import { Eye, Edit3, Image as ImageIcon, BarChart2, Hash, Layers } from "lucide-react";
+import { Edit3, BarChart2, Layers } from "lucide-react";
 import { MathEquation } from "@/components/MathContent";
 
 interface PageViewerProps {
@@ -45,7 +45,7 @@ export default function PageViewer({
     if (level === "green" || score >= 0.90) {
       return (
         <span
-          title={`High Confidence (${(score * 100).toFixed(0)}%)`}
+          title={`High extractor signal (${(score * 100).toFixed(0)}%); not a correctness probability`}
           className="inline-flex items-center space-x-1 px-1.5 py-0.5 rounded text-[11px] font-mono bg-emerald-100 text-emerald-800 border border-emerald-300 shrink-0"
         >
           <span className="w-2 h-2 rounded-full bg-emerald-600 inline-block" />
@@ -55,7 +55,7 @@ export default function PageViewer({
     } else if (level === "yellow" || score >= 0.70) {
       return (
         <span
-          title={`Average Confidence (${(score * 100).toFixed(0)}%) - Review Suggested`}
+          title={`Medium extractor signal (${(score * 100).toFixed(0)}%); review suggested`}
           className="inline-flex items-center space-x-1 px-1.5 py-0.5 rounded text-[11px] font-mono bg-amber-100 text-amber-900 border border-amber-300 shrink-0"
         >
           <span className="w-2 h-2 rounded-full bg-amber-500 inline-block animate-pulse" />
@@ -65,7 +65,7 @@ export default function PageViewer({
     } else {
       return (
         <span
-          title={`Low Confidence (${(score * 100).toFixed(0)}%) - Needs Manual Edit`}
+          title={`Low extractor signal (${(score * 100).toFixed(0)}%); review suggested`}
           className="inline-flex items-center space-x-1 px-1.5 py-0.5 rounded text-[11px] font-mono bg-rose-100 text-rose-900 border border-rose-300 shrink-0"
         >
           <span className="w-2 h-2 rounded-full bg-rose-600 inline-block" />
@@ -169,7 +169,7 @@ export default function PageViewer({
 
           {filteredBlocks.length === 0 ? (
             <div className="p-8 text-center text-xs text-slate-500 bg-slate-50 rounded border border-slate-200">
-              No low-confidence blocks found on this page. All blocks passed high confidence checks!
+              No low-signal blocks found on this page. Review extracted content; signals do not verify correctness.
             </div>
           ) : (
             filteredBlocks.map((b) => {
@@ -202,7 +202,13 @@ export default function PageViewer({
                     </div>
 
                     <div className="flex items-center space-x-2">
-                      {getConfDot(b.confidence_level, b.confidence)}
+                      <span title={
+                        b.confidence_basis === "ocr_engine_score"
+                          ? "Based on the OCR engine's recognition output; not calibrated against ground truth."
+                          : "Heuristic from the extractor; not calibrated against ground truth."
+                      }>
+                        {getConfDot(b.confidence_level, b.confidence)}
+                      </span>
 
                       {/* Subtle Hidden Edit Action for Low Confidence Blocks */}
                       {isLowConf && onEditBlock && (
@@ -252,10 +258,10 @@ export default function PageViewer({
                         {b.metadata?.series && (
                           <div className="mt-2 text-[11px] font-mono bg-white p-2 rounded border border-slate-200">
                             <p className="font-bold text-slate-800 mb-1">Extracted Series Data:</p>
-                            {b.metadata.series.map((s: any, idx: number) => (
+                            {b.metadata.series.map((s, idx) => (
                               <div key={idx} className="flex justify-between py-0.5 border-b border-slate-100 last:border-0">
                                 <span>{s.name}:</span>
-                                <span>[{s.data.join(", ")}]</span>
+                                <span>[{(s.data ?? s.values ?? []).join(", ")}]</span>
                               </div>
                             ))}
                           </div>

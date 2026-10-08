@@ -23,7 +23,9 @@ export default function ConfidenceLegend({
       {/* Dots Legend */}
       <div className="flex flex-wrap items-center gap-4 text-xs font-semibold">
         <span className="text-slate-500 font-bold uppercase tracking-wider text-[10px]">
-          Confidence Legend:
+          <span title="These scores are not calibrated probabilities of correctness.">
+            Extraction signal:
+          </span>
         </span>
 
         <div className="flex items-center space-x-1.5 px-2.5 py-1 rounded bg-rose-50 border border-rose-200 text-rose-900">
@@ -54,8 +56,11 @@ export default function ConfidenceLegend({
           className="rounded border-slate-300 text-teal-600 focus:ring-teal-500 w-4 h-4"
         />
         <Filter className="w-3.5 h-3.5 text-slate-500" />
-        <span>Show only low confidence (&lt; 0.90)</span>
+        <span>Show only low signal (&lt; 0.90)</span>
       </label>
+      <p className="text-[11px] text-slate-500 sm:basis-full">
+        OCR/extractor signal only; not a calibrated probability of correctness.
+      </p>
     </div>
   );
 }

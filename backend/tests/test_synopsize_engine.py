@@ -75,7 +75,10 @@ def test_validation_valid_pdf():
     report = validate_uploaded_file(pdf_bytes, "valid_test.pdf", store=False)
     assert report["is_valid"] is True
     assert report["banner_message"] == "Your uploaded file is valid."
-    assert all(c["passed"] for c in report["checks"])
+    assert all(c["passed"] is True for c in report["checks"] if c["name"] != "Antivirus Scan")
+    antivirus = next(c for c in report["checks"] if c["name"] == "Antivirus Scan")
+    assert antivirus["passed"] is None
+    assert antivirus["status"] == "disabled"
 
 def test_validation_invalid_magic_bytes_mismatch():
     fake_pdf = b"NOT_A_REAL_PDF_HEADER_JUST_TEXT"

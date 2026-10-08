@@ -60,6 +60,12 @@ def _normalize_pages(
             block["reading_order"] = reading_order
             block["confidence"] = round(confidence, 4)
             block["confidence_level"] = get_confidence_level(confidence)
+            block["confidence_basis"] = (
+                "ocr_engine_score"
+                if "tesseract" in str(extractor).lower()
+                else "heuristic_extractor_estimate"
+            )
+            block["confidence_calibrated"] = False
             block.setdefault("content", "")
             block["extractor"] = extractor
             block.setdefault(

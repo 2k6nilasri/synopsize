@@ -1,6 +1,13 @@
 version: "3.8"
 
 services:
+  clamav:
+    image: clamav/clamav:stable
+    restart: unless-stopped
+    mem_limit: 2g
+    cpus: 2.0
+    pids_limit: 128
+
   backend:
     build:
       context: ./backend
@@ -9,6 +16,20 @@ services:
       - "8000:8000"
     environment:
       - PORT=8000
+      - SYNOPSIZE_ANTIVIRUS_MODE=required
+      - SYNOPSIZE_CLAMD_HOST=clamav
+    depends_on:
+      - clamav
+    read_only: true
+    tmpfs:
+      - /tmp:size=512m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
+    mem_limit: 2g
+    cpus: 2.0
     volumes:
       - ./backend/storage:/app/storage
     restart: unless-stopped
