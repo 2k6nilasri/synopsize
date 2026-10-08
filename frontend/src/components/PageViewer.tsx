@@ -3,6 +3,7 @@
 import React, { useState } from "react";
 import { DocumentPage, DocumentBlock, ConfidenceLevel } from "@/types";
 import { Eye, Edit3, Image as ImageIcon, BarChart2, Hash, Layers } from "lucide-react";
+import { MathEquation } from "@/components/MathContent";
 
 interface PageViewerProps {
   pages: DocumentPage[];
@@ -261,9 +262,7 @@ export default function PageViewer({
                         )}
                       </div>
                     ) : b.type === "equation" ? (
-                      <div className="my-2 p-2 bg-slate-900 text-teal-300 font-mono text-xs rounded border border-slate-800">
-                        {b.content}
-                      </div>
+                      <MathEquation content={b.metadata?.latex || b.content} />
                     ) : (
                       <p className="whitespace-pre-wrap">{b.content}</p>
                     )}

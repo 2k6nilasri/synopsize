@@ -1,0 +1,27 @@
+upload:
+  max_file_size_bytes: 52428800
+  max_pages: 100
+  max_image_pixels: 100000000
+  max_archive_uncompressed_bytes: 524288000
+  max_attachment_depth: 3
+  max_attachment_bytes: 26214400
+
+retention:
+  hours: 24
+  cleanup_interval_seconds: 3600
+
+confidence:
+  red_max: 0.7
+  yellow_max: 0.9
+
+processing:
+  extractor_timeout_seconds: 60
+  embeddings_enabled: true
+
+security:
+  cors_allowed_origins:
+    - http://localhost:3000
+    - http://127.0.0.1:3000
+    - http://localhost:3002
+    - http://127.0.0.1:3002
+  rate_limit_per_minute: 120

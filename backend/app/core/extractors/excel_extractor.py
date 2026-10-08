@@ -10,6 +10,7 @@ def process_excel_or_csv(file_bytes: bytes, filename: str) -> Dict[str, Any]:
     """
     ext = filename.split(".")[-1].lower()
     sheets_data = {}
+    sheets_metadata = {}
     
     if ext == "csv":
         df = pd.read_csv(io.BytesIO(file_bytes))
@@ -18,6 +19,39 @@ def process_excel_or_csv(file_bytes: bytes, filename: str) -> Dict[str, Any]:
         excel_file = pd.ExcelFile(io.BytesIO(file_bytes))
         for sheet in excel_file.sheet_names:
             sheets_data[sheet] = excel_file.parse(sheet)
+        if ext == "xlsx":
+            from openpyxl import load_workbook
+
+            formulas_book = load_workbook(io.BytesIO(file_bytes), data_only=False, read_only=True)
+            values_book = load_workbook(io.BytesIO(file_bytes), data_only=True, read_only=True)
+            for worksheet in formulas_book.worksheets:
+                values_sheet = values_book[worksheet.title]
+                formulas = []
+                for row in worksheet.iter_rows():
+                    for cell in row:
+                        if isinstance(cell.value, str) and cell.value.startswith("="):
+                            cached_value = values_sheet[cell.coordinate].value
+                            if cached_value is not None and not isinstance(
+                                cached_value, (str, int, float, bool)
+                            ):
+                                cached_value = (
+                                    cached_value.isoformat()
+                                    if hasattr(cached_value, "isoformat")
+                                    else str(cached_value)
+                                )
+                            formulas.append(
+                                {
+                                    "cell": cell.coordinate,
+                                    "formula": cell.value,
+                                    "cached_value": cached_value,
+                                }
+                            )
+                sheets_metadata[worksheet.title] = {
+                    "visibility": worksheet.sheet_state,
+                    "formulas": formulas,
+                }
+            formulas_book.close()
+            values_book.close()
 
     pages = []
     ocr_lines = []
@@ -68,7 +102,8 @@ def process_excel_or_csv(file_bytes: bytes, filename: str) -> Dict[str, Any]:
                 "sheet_name": sheet_name,
                 "total_rows": len(df),
                 "total_cols": len(columns),
-                "columns": columns
+                "columns": columns,
+                **sheets_metadata.get(sheet_name, {"visibility": "visible", "formulas": []}),
             }
         })
         

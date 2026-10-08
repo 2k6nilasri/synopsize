@@ -1,21 +1,23 @@
 import asyncio
+import hashlib
 import json
+import logging
 import time
 import datetime
 from pathlib import Path
 from typing import Dict, Any, List, AsyncGenerator
 
-from app.config import JOBS_DIR, UPLOADS_DIR, get_confidence_level
-from app.core.extractors.pdf_extractor import process_pdf_document
-from app.core.extractors.image_extractor import process_image_file
-from app.core.extractors.docx_extractor import process_docx_document
-from app.core.extractors.excel_extractor import process_excel_or_csv
+from app.config import JOBS_DIR, SETTINGS, UPLOADS_DIR, get_confidence_level
+from app.core.file_parser import extract_document
+from app.core.output import normalize_document, render_markdown
+from app.core.audit import append_audit_event
 from app.core.semantic.chunker import create_semantic_chunks
 from app.core.semantic.indexer import VectorIndex
 
 # Active jobs status and progress event queues
 JOB_STORES: Dict[str, Dict[str, Any]] = {}
 JOB_EVENTS: Dict[str, List[Dict[str, Any]]] = {}
+logger = logging.getLogger(__name__)
 
 STAGES = [
     {"id": 1, "name": "Input", "description": "Validation, format verification & security scan"},
@@ -87,16 +89,8 @@ async def run_pipeline_job(job_id: str, file_path: str, filename: str):
         log_event(4, "running", "Extracting page blocks, reading order, tables, equations, and visual charts...")
         await asyncio.sleep(0.3)
 
-        if ext == ".pdf":
-            parsed_res = process_pdf_document(file_bytes, filename)
-        elif ext in [".png", ".jpg", ".jpeg"]:
-            parsed_res = process_image_file(file_bytes, filename)
-        elif ext == ".docx":
-            parsed_res = process_docx_document(file_bytes, filename)
-        elif ext in [".xlsx", ".csv"]:
-            parsed_res = process_excel_or_csv(file_bytes, filename)
-        else:
-            raise ValueError(f"Unsupported file format {ext}")
+        parsed_res = await asyncio.to_thread(extract_document, file_bytes, filename)
+        normalize_document(parsed_res, file_bytes, filename, job_id)
 
         total_pages = parsed_res["total_pages"]
         total_blocks = sum(len(p["blocks"]) for p in parsed_res["pages"])
@@ -113,7 +107,7 @@ async def run_pipeline_job(job_id: str, file_path: str, filename: str):
         await asyncio.sleep(0.2)
 
         all_confidences = [b["confidence"] for p in parsed_res["pages"] for b in p["blocks"]]
-        overall_conf = sum(all_confidences) / max(1, len(all_confidences)) if all_confidences else 0.95
+        overall_conf = sum(all_confidences) / len(all_confidences) if all_confidences else 0.0
         
         # Attach confidence status to every block
         for p in parsed_res["pages"]:
@@ -128,22 +122,7 @@ async def run_pipeline_job(job_id: str, file_path: str, filename: str):
         log_event(6, "running", "Building Markdown, JSON, and line-by-line OCR Text representations...")
         await asyncio.sleep(0.2)
 
-        # Build combined Markdown string
-        md_lines = [f"# Document Analysis: {filename}\n"]
-        for p in parsed_res["pages"]:
-            md_lines.append(f"## Page {p['page_number']}\n")
-            for b in p["blocks"]:
-                b_type = b["type"]
-                content = b["content"]
-                if b_type == "heading":
-                    md_lines.append(f"### {content}\n")
-                elif b_type == "table":
-                    md_lines.append(f"\n{content}\n")
-                elif b_type == "equation":
-                    md_lines.append(f"\n{content}\n")
-                else:
-                    md_lines.append(f"{content}\n")
-        markdown_full = "\n".join(md_lines)
+        markdown_full = render_markdown(filename, parsed_res["pages"])
 
         t6_ms = int((time.time() - stage_start_times[6]) * 1000)
         log_event(6, "done", "Markdown, JSON, and OCR Text generated", summary="Formats ready", timing_ms=t6_ms)
@@ -154,8 +133,10 @@ async def run_pipeline_job(job_id: str, file_path: str, filename: str):
         await asyncio.sleep(0.2)
 
         chunks = create_semantic_chunks(parsed_res["pages"])
-        vector_index = VectorIndex(chunks)
-        indexed_chunks = vector_index.chunks
+        if SETTINGS["processing"]["embeddings_enabled"]:
+            indexed_chunks = VectorIndex(chunks).chunks
+        else:
+            indexed_chunks = chunks
 
         t7_ms = int((time.time() - stage_start_times[7]) * 1000)
         log_event(7, "done", f"Generated {len(indexed_chunks)} structural vector chunks", summary=f"{len(indexed_chunks)} Chunks Indexed", timing_ms=t7_ms)
@@ -174,6 +155,12 @@ async def run_pipeline_job(job_id: str, file_path: str, filename: str):
             "created_at": datetime.datetime.utcnow().isoformat() + "Z",
             "processing_time_seconds": elapsed_total,
             "pages": parsed_res["pages"],
+            "child_documents": parsed_res.get("child_documents", []),
+            "revisions": parsed_res.get("revisions", []),
+            "comments": parsed_res.get("comments", []),
+            "footnotes": parsed_res.get("footnotes", []),
+            "endnotes": parsed_res.get("endnotes", []),
+            "file_sha256": parsed_res["file_sha256"],
             "markdown": markdown_full,
             "ocr_text": parsed_res["ocr_text"],
             "chunks": indexed_chunks,
@@ -191,6 +178,14 @@ async def run_pipeline_job(job_id: str, file_path: str, filename: str):
 
         # Cache job result to disk
         job_file = get_job_file_path(job_id)
+        audit_entry = append_audit_event(
+            job_id,
+            "document_parse",
+            "completed",
+            parsed_res["file_sha256"],
+            stage=7,
+        )
+        result["audit_entry_hash"] = audit_entry["entry_hash"]
         with open(job_file, "w", encoding="utf-8") as f:
             json.dump(result, f, indent=2)
 
@@ -202,9 +197,28 @@ async def run_pipeline_job(job_id: str, file_path: str, filename: str):
         }
 
     except Exception as e:
-        log_event(JOB_STORES.get(job_id, {}).get("current_stage", 1), "failed", f"Pipeline error: {str(e)}")
+        failed_stage = JOB_STORES.get(job_id, {}).get("current_stage", 1)
+        try:
+            append_audit_event(
+                job_id,
+                "document_parse",
+                "error",
+                hashlib.sha256(file_bytes).hexdigest() if "file_bytes" in locals() else "",
+                stage=failed_stage,
+            )
+        except (OSError, json.JSONDecodeError):
+            logger.exception("Failed to append the document failure to the audit log.")
+        failure = {
+            "status": "error",
+            "stage": failed_stage,
+            "stage_name": STAGES[failed_stage - 1]["name"],
+            "code": "EXTRACTION_FAILED",
+            "message": str(e),
+            "recoverable": False,
+        }
+        log_event(failed_stage, "failed", f"Pipeline error: {str(e)}")
         JOB_STORES[job_id] = {
             "status": "failed",
-            "error": str(e),
-            "current_stage": JOB_STORES.get(job_id, {}).get("current_stage", 1)
+            "error": failure,
+            "current_stage": failed_stage
         }

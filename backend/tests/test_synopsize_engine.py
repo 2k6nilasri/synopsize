@@ -32,6 +32,8 @@ from app.core.corrections import (
     get_correction_consent,
     set_correction_consent
 )
+import app.core.corrections as correction_store
+import app.core.audit as audit_store
 
 # 8 Image Tools
 from app.core.tools.deskew import deskew_image
@@ -70,7 +72,7 @@ def create_test_image_bytes(w=300, h=200, color=(255, 255, 255)):
 
 def test_validation_valid_pdf():
     pdf_bytes = create_test_pdf_bytes(1)
-    report = validate_uploaded_file(pdf_bytes, "valid_test.pdf")
+    report = validate_uploaded_file(pdf_bytes, "valid_test.pdf", store=False)
     assert report["is_valid"] is True
     assert report["banner_message"] == "Your uploaded file is valid."
     assert all(c["passed"] for c in report["checks"])
@@ -281,7 +283,10 @@ def test_tool_render_pdf():
 # 5. CORRECTIONS & CONSENT TESTS
 # ==========================================
 
-def test_silent_correction_logging_and_consent():
+def test_silent_correction_logging_and_consent(monkeypatch, tmp_path):
+    monkeypatch.setattr(correction_store, "CORRECTIONS_FILE", tmp_path / "corrections.jsonl")
+    monkeypatch.setattr(correction_store, "CONSENT_FILE", tmp_path / "consent_settings.json")
+
     # Enable consent
     set_correction_consent(True)
     assert get_correction_consent() is True
@@ -326,7 +331,8 @@ def test_api_validate_endpoint():
     assert data["is_valid"] is True
     assert data["banner_message"] == "Your uploaded file is valid."
 
-def test_api_parse_and_export_flow():
+def test_api_parse_and_export_flow(monkeypatch, tmp_path):
+    monkeypatch.setattr(audit_store, "AUDIT_LOG_FILE", tmp_path / "audit.jsonl")
     pdf_bytes = create_test_pdf_bytes(1)
     
     # 1. Parse endpoint
@@ -348,6 +354,8 @@ def test_api_parse_and_export_flow():
     pii_resp = client.get("/api/settings/pii")
     assert pii_resp.status_code == 200
     assert "pii_redaction" in pii_resp.json()
+    delete_resp = client.delete(f"/api/jobs/{job_id}")
+    assert delete_resp.status_code == 200
 
 def test_api_image_tools_endpoints():
     img_bytes = create_test_image_bytes(200, 200)

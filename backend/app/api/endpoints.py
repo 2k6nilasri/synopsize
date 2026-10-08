@@ -2,6 +2,9 @@ import asyncio
 import io
 import json
 import zipfile
+import logging
+import shutil
+import uuid
 import cv2
 import numpy as np
 
@@ -10,11 +13,19 @@ from fastapi.responses import StreamingResponse, FileResponse, JSONResponse
 from pathlib import Path
 from typing import Optional, List, Dict, Any
 
-from app.config import UPLOADS_DIR, JOBS_DIR, TOOLS_DIR, CORRECTIONS_DIR
+from app.config import (
+    CORRECTIONS_DIR,
+    JOBS_DIR,
+    MAX_FILE_SIZE_BYTES,
+    SETTINGS,
+    TOOLS_DIR,
+    UPLOADS_DIR,
+)
 from app.core.security import validate_uploaded_file, mask_pii_entities
 from app.core.pipeline import run_pipeline_job, JOB_STORES, JOB_EVENTS, get_job_file_path, STAGES
 from app.core.corrections import log_correction, get_correction_consent, set_correction_consent
 from app.core.semantic.indexer import VectorIndex
+from app.core.audit import audit_csv, read_audit_log, verify_audit_log
 
 # Import Image Tools
 from app.core.tools.deskew import deskew_image
@@ -27,22 +38,92 @@ from app.core.tools.duplicate_detect import detect_duplicate_pages
 from app.core.tools.render_pdf import render_pdf_to_png_zip
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
+
+
+async def _read_upload(file: UploadFile) -> bytes:
+    file_bytes = await file.read(MAX_FILE_SIZE_BYTES + 1)
+    if len(file_bytes) > MAX_FILE_SIZE_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"Upload exceeds the {MAX_FILE_SIZE_BYTES}-byte limit.",
+        )
+    return file_bytes
+
+
+def _normalized_job_id(job_id: str) -> str:
+    try:
+        return str(uuid.UUID(job_id))
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail="Invalid job ID.") from error
+
+
+@router.get("/audit")
+async def get_audit_log(format: str = "json"):
+    """Returns the hash-chain verification result and audit entries."""
+    try:
+        records = read_audit_log()
+        valid, verified_count = verify_audit_log(records)
+    except (OSError, json.JSONDecodeError) as error:
+        logger.exception("Could not read the audit log.")
+        return JSONResponse(
+            status_code=500,
+            content={
+                "integrity_valid": False,
+                "error": f"Audit log could not be read: {error}",
+            },
+        )
+    if format == "csv":
+        return Response(
+            content=audit_csv(records),
+            media_type="text/csv",
+            headers={"Content-Disposition": "attachment; filename=synopsize-audit.csv"},
+        )
+    if format != "json":
+        raise HTTPException(status_code=400, detail="Invalid audit format requested")
+    return {
+        "integrity_valid": valid,
+        "verified_entries": verified_count,
+        "records": records,
+    }
+
 
 @router.post("/validate")
 async def validate_file_endpoint(file: UploadFile = File(...)):
     """Validates uploaded file against 5 security & integrity checks."""
-    file_bytes = await file.read()
-    report = validate_uploaded_file(file_bytes, file.filename)
+    file_bytes = await _read_upload(file)
+    report = validate_uploaded_file(file_bytes, file.filename or "upload", store=False)
     return report
 
 @router.post("/parse")
 async def start_parse_job(background_tasks: BackgroundTasks, file: UploadFile = File(...)):
     """Validates and launches an asynchronous 7-stage document parsing job."""
-    file_bytes = await file.read()
-    report = validate_uploaded_file(file_bytes, file.filename)
+    file_bytes = await _read_upload(file)
+    filename = file.filename or "upload"
+    report = validate_uploaded_file(file_bytes, filename)
     
     if not report["is_valid"]:
-        raise HTTPException(status_code=400, detail={"message": "Validation failed", "report": report})
+        messages = " ".join(check["message"] for check in report["checks"]).lower()
+        if "unsupported file extension" in messages:
+            code = "UNSUPPORTED_FORMAT"
+        elif "encrypted" in messages or "password-protected" in messages:
+            code = "ENCRYPTED"
+        elif "corrupt" in messages or "integrity" in messages:
+            code = "CORRUPT"
+        else:
+            code = "INVALID_FILE"
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "status": "error",
+                "stage": 2,
+                "stage_name": "File Validation",
+                "code": code,
+                "message": report["banner_message"],
+                "recoverable": False,
+                "checks": report["checks"],
+            },
+        )
 
     job_id = report["file_id"]
     saved_path = report["saved_path"]
@@ -50,17 +131,17 @@ async def start_parse_job(background_tasks: BackgroundTasks, file: UploadFile = 
     # Initialize job state
     JOB_STORES[job_id] = {
         "status": "processing",
-        "filename": file.filename,
+        "filename": filename,
         "current_stage": 1,
         "stage_statuses": {i: "pending" for i in range(1, 8)}
     }
 
     # Run pipeline in background task
-    background_tasks.add_task(run_pipeline_job, job_id, saved_path, file.filename)
+    background_tasks.add_task(run_pipeline_job, job_id, saved_path, filename)
 
     return {
         "job_id": job_id,
-        "filename": file.filename,
+        "filename": filename,
         "status": "processing",
         "validation_report": report
     }
@@ -68,6 +149,14 @@ async def start_parse_job(background_tasks: BackgroundTasks, file: UploadFile = 
 @router.get("/jobs/{job_id}/events")
 async def stream_job_events(job_id: str):
     """Server-Sent Events (SSE) stream for real-time pipeline stage progress."""
+    job_id = _normalized_job_id(job_id)
+    if (
+        job_id not in JOB_STORES
+        and job_id not in JOB_EVENTS
+        and not get_job_file_path(job_id).exists()
+    ):
+        raise HTTPException(status_code=404, detail="Job not found")
+
     async def event_generator():
         sent_count = 0
         while True:
@@ -89,6 +178,8 @@ async def stream_job_events(job_id: str):
 @router.get("/jobs/{job_id}/result")
 async def get_job_result(job_id: str):
     """Returns structured document output (Markdown, JSON, OCR text, pages, chunks)."""
+    job_id = _normalized_job_id(job_id)
+
     # Check disk cache first
     job_file = get_job_file_path(job_id)
     if job_file.exists():
@@ -102,13 +193,21 @@ async def get_job_result(job_id: str):
     if job_state["status"] == "processing":
         return {"job_id": job_id, "status": "processing", "current_stage": job_state.get("current_stage", 1)}
     elif job_state["status"] == "failed":
-        raise HTTPException(status_code=500, detail=job_state.get("error", "Processing failed"))
+        return JSONResponse(status_code=500, content=job_state.get("error", {
+            "status": "error",
+            "stage": job_state.get("current_stage", 1),
+            "stage_name": "Document Processing",
+            "code": "PROCESSING_FAILED",
+            "message": "Processing failed.",
+            "recoverable": False,
+        }))
 
     return job_state.get("result", {})
 
 @router.get("/jobs/{job_id}/export")
 async def export_job_result(job_id: str, format: str = "zip"):
     """Exports structured output as Markdown (.md), JSON (.json), OCR Text (.txt), or ZIP archive."""
+    job_id = _normalized_job_id(job_id)
     job_file = get_job_file_path(job_id)
     if not job_file.exists():
         raise HTTPException(status_code=404, detail="Job result not found")
@@ -169,17 +268,28 @@ async def export_job_result(job_id: str, format: str = "zip"):
 @router.delete("/jobs/{job_id}")
 async def delete_job_data(job_id: str):
     """Deletes uploaded file and processed job results immediately ('Delete my data now')."""
-    deleted = False
+    job_id = _normalized_job_id(job_id)
     job_file = get_job_file_path(job_id)
-    if job_file.exists():
-        job_file.unlink()
-        deleted = True
-        
     upload_dir = UPLOADS_DIR / job_id
-    if upload_dir.exists():
-        import shutil
-        shutil.rmtree(upload_dir, ignore_errors=True)
-        deleted = True
+    if (
+        not job_file.exists()
+        and not upload_dir.exists()
+        and job_id not in JOB_STORES
+        and job_id not in JOB_EVENTS
+    ):
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    try:
+        if job_file.exists():
+            job_file.unlink()
+        if upload_dir.exists():
+            shutil.rmtree(upload_dir)
+    except OSError as error:
+        logger.exception("Could not delete data for job %s.", job_id)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Could not delete all data for job {job_id}.",
+        ) from error
 
     if job_id in JOB_STORES:
         del JOB_STORES[job_id]
@@ -191,6 +301,9 @@ async def delete_job_data(job_id: str):
 @router.post("/search")
 async def semantic_search(job_id: str = Form(...), query: str = Form(...)):
     """Runs semantic vector search over a document's structural chunks."""
+    job_id = _normalized_job_id(job_id)
+    if not SETTINGS["processing"]["embeddings_enabled"]:
+        raise HTTPException(status_code=503, detail="Semantic indexing is disabled by configuration.")
     job_file = get_job_file_path(job_id)
     if not job_file.exists():
         raise HTTPException(status_code=404, detail="Job not found")
@@ -273,8 +386,8 @@ async def update_pii_setting(enabled: bool = Form(...)):
 @router.post("/tools/deskew")
 async def tool_deskew(file: UploadFile = File(...)):
     """Deskews document image."""
-    file_bytes = await file.read()
-    report = validate_uploaded_file(file_bytes, file.filename)
+    file_bytes = await _read_upload(file)
+    report = validate_uploaded_file(file_bytes, file.filename or "upload", store=False)
     if not report["is_valid"]:
         raise HTTPException(status_code=400, detail=report["banner_message"])
 
@@ -288,8 +401,8 @@ async def tool_deskew(file: UploadFile = File(...)):
 @router.post("/tools/denoise")
 async def tool_denoise(file: UploadFile = File(...), strength: int = Form(10)):
     """Removes noise and background artifacts."""
-    file_bytes = await file.read()
-    report = validate_uploaded_file(file_bytes, file.filename)
+    file_bytes = await _read_upload(file)
+    report = validate_uploaded_file(file_bytes, file.filename or "upload", store=False)
     if not report["is_valid"]:
         raise HTTPException(status_code=400, detail=report["banner_message"])
 
@@ -306,8 +419,8 @@ async def tool_sharpness(
     intensity: float = Form(1.5, ge=0.5, le=3.0),
 ):
     """Improves image edge clarity using unsharp masking without resizing."""
-    file_bytes = await file.read()
-    report = validate_uploaded_file(file_bytes, file.filename)
+    file_bytes = await _read_upload(file)
+    report = validate_uploaded_file(file_bytes, file.filename or "upload", store=False)
     if not report["is_valid"]:
         raise HTTPException(status_code=400, detail=report["banner_message"])
 
@@ -320,8 +433,8 @@ async def tool_sharpness(
 @router.post("/tools/rotate")
 async def tool_rotate(file: UploadFile = File(...), angle: int = Form(90)):
     """Rotates image by 90, 180, 270 degrees or auto-detects if 0."""
-    file_bytes = await file.read()
-    report = validate_uploaded_file(file_bytes, file.filename)
+    file_bytes = await _read_upload(file)
+    report = validate_uploaded_file(file_bytes, file.filename or "upload", store=False)
     if not report["is_valid"]:
         raise HTTPException(status_code=400, detail=report["banner_message"])
 
@@ -334,8 +447,8 @@ async def tool_rotate(file: UploadFile = File(...), angle: int = Form(90)):
 @router.post("/tools/contrast")
 async def tool_contrast(file: UploadFile = File(...), alpha: float = Form(1.3), beta: int = Form(10)):
     """Adjusts contrast and brightness."""
-    file_bytes = await file.read()
-    report = validate_uploaded_file(file_bytes, file.filename)
+    file_bytes = await _read_upload(file)
+    report = validate_uploaded_file(file_bytes, file.filename or "upload", store=False)
     if not report["is_valid"]:
         raise HTTPException(status_code=400, detail=report["banner_message"])
 
@@ -348,8 +461,8 @@ async def tool_contrast(file: UploadFile = File(...), alpha: float = Form(1.3), 
 @router.post("/tools/blank-pages")
 async def tool_blank_pages(file: UploadFile = File(...)):
     """Flags blank pages in a PDF document."""
-    file_bytes = await file.read()
-    report = validate_uploaded_file(file_bytes, file.filename)
+    file_bytes = await _read_upload(file)
+    report = validate_uploaded_file(file_bytes, file.filename or "upload", store=False)
     if not report["is_valid"]:
         raise HTTPException(status_code=400, detail=report["banner_message"])
 
@@ -368,8 +481,8 @@ async def tool_blank_pages(file: UploadFile = File(...)):
 @router.post("/tools/duplicates")
 async def tool_duplicates(file: UploadFile = File(...)):
     """Detects duplicate pages using perceptual hashing."""
-    file_bytes = await file.read()
-    report = validate_uploaded_file(file_bytes, file.filename)
+    file_bytes = await _read_upload(file)
+    report = validate_uploaded_file(file_bytes, file.filename or "upload", store=False)
     if not report["is_valid"]:
         raise HTTPException(status_code=400, detail=report["banner_message"])
 
@@ -379,8 +492,8 @@ async def tool_duplicates(file: UploadFile = File(...)):
 @router.post("/tools/render-pdf")
 async def tool_render_pdf(file: UploadFile = File(...), dpi: int = Form(150)):
     """Renders PDF pages as PNG images and packages into ZIP file."""
-    file_bytes = await file.read()
-    report = validate_uploaded_file(file_bytes, file.filename)
+    file_bytes = await _read_upload(file)
+    report = validate_uploaded_file(file_bytes, file.filename or "upload", store=False)
     if not report["is_valid"]:
         raise HTTPException(status_code=400, detail=report["banner_message"])
 

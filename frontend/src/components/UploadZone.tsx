@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState, useRef } from "react";
-import { UploadCloud, FileCheck, FileText, AlertCircle, RefreshCw } from "lucide-react";
+import { UploadCloud, FileCheck, AlertCircle, RefreshCw } from "lucide-react";
 
 interface UploadZoneProps {
   onFileSelect: (file: File) => void;
@@ -10,7 +10,11 @@ interface UploadZoneProps {
   onReset?: () => void;
 }
 
-const ALLOWED_EXTENSIONS = [".pdf", ".docx", ".png", ".jpg", ".jpeg", ".xlsx", ".csv"];
+const ALLOWED_EXTENSIONS = [
+  ".pdf", ".png", ".jpg", ".jpeg", ".tif", ".tiff", ".heic",
+  ".docx", ".doc", ".pptx", ".ppt", ".xlsx", ".xls", ".csv",
+  ".html", ".htm", ".md", ".txt", ".rtf", ".eml", ".msg"
+];
 
 export default function UploadZone({
   onFileSelect,
@@ -56,7 +60,7 @@ export default function UploadZone({
             Document Upload
           </h2>
           <p className="text-xs text-slate-500 mt-0.5">
-            Supported formats: PDF, DOCX, PNG, JPG, XLSX, CSV (Max 50 MB)
+            Supported: PDF, images, Office, CSV, text, HTML, RTF and email (Max 50 MB)
           </p>
         </div>
 
@@ -91,7 +95,7 @@ export default function UploadZone({
             type="file"
             ref={fileInputRef}
             onChange={(e) => handleFiles(e.target.files)}
-            accept=".pdf,.docx,.png,.jpg,.jpeg,.xlsx,.csv"
+            accept={ALLOWED_EXTENSIONS.join(",")}
             className="hidden"
           />
 

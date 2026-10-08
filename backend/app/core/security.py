@@ -11,7 +11,9 @@ from app.config import (
     ALLOWED_EXTENSIONS,
     MAGIC_BYTES_MAP,
     MAX_FILE_SIZE_BYTES,
+    MAX_ARCHIVE_UNCOMPRESSED_BYTES,
     MAX_IMAGE_PIXELS,
+    MAX_PAGES,
     UPLOADS_DIR
 )
 
@@ -19,7 +21,9 @@ def sanitize_filename(filename: str) -> str:
     cleaned = re.sub(r'[^\w\.-]', '_', filename)
     return cleaned[:100]
 
-def validate_uploaded_file(file_bytes: bytes, original_filename: str) -> Dict[str, Any]:
+def validate_uploaded_file(
+    file_bytes: bytes, original_filename: str, *, store: bool = True
+) -> Dict[str, Any]:
     """
     Performs 5 strict security & validation checks:
     1. Extension & Format check (magic bytes matching)
@@ -30,6 +34,8 @@ def validate_uploaded_file(file_bytes: bytes, original_filename: str) -> Dict[st
     Returns structured report with pass/fail per check.
     """
     checks = []
+    security_messages = []
+    security_passed = True
     is_valid = True
     ext = Path(original_filename).suffix.lower()
     
@@ -47,7 +53,18 @@ def validate_uploaded_file(file_bytes: bytes, original_filename: str) -> Dict[st
         magic_pass = True
         if clean_ext in MAGIC_BYTES_MAP:
             expected_magics = MAGIC_BYTES_MAP[clean_ext]
-            matched = any(file_bytes.startswith(m) for m in expected_magics)
+            if clean_ext == "heic":
+                matched = any(file_bytes[4:12].startswith(m) for m in expected_magics)
+            elif clean_ext in {"docx", "pptx", "xlsx"} and file_bytes.startswith(
+                b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
+            ):
+                matched = False
+                security_passed = False
+                security_messages.append(
+                    "Encrypted Office container detected for a modern Office extension."
+                )
+            else:
+                matched = any(file_bytes.startswith(m) for m in expected_magics)
             if not matched:
                 magic_pass = False
                 is_valid = False
@@ -57,10 +74,15 @@ def validate_uploaded_file(file_bytes: bytes, original_filename: str) -> Dict[st
                     "message": f"File signature (magic bytes) does not match expected format for extension '{ext}'."
                 })
         if magic_pass:
+            format_message = (
+                f"Extension '{ext}' and file signature verified matching."
+                if clean_ext in MAGIC_BYTES_MAP
+                else f"Extension '{ext}' is allowed for this text-based format."
+            )
             checks.append({
                 "name": "Format Check",
                 "passed": True,
-                "message": f"Extension '{ext}' and magic bytes verified matching."
+                "message": format_message
             })
 
     # Check 2: Size Check
@@ -69,7 +91,7 @@ def validate_uploaded_file(file_bytes: bytes, original_filename: str) -> Dict[st
         checks.append({
             "name": "Size Check",
             "passed": False,
-            "message": f"File size ({file_size / (1024*1024):.2f} MB) exceeds maximum allowed limit of 50 MB."
+            "message": f"File size ({file_size / (1024*1024):.2f} MB) exceeds maximum allowed limit of {MAX_FILE_SIZE_BYTES / (1024*1024):.0f} MB."
         })
         is_valid = False
     elif file_size == 0:
@@ -88,12 +110,12 @@ def validate_uploaded_file(file_bytes: bytes, original_filename: str) -> Dict[st
 
     # Check 3 & 4: Corruption and Security Threat Scan
     corruption_passed = True
-    security_passed = True
-    security_messages = []
-
-    if ext in [".png", ".jpg", ".jpeg"]:
+    if ext in [".png", ".jpg", ".jpeg", ".tif", ".tiff", ".heic"]:
         try:
             from io import BytesIO
+            if ext == ".heic":
+                import pillow_heif
+                pillow_heif.register_heif_opener()
             img = Image.open(BytesIO(file_bytes))
             img.verify()
             # Reopen for size check after verify
@@ -103,6 +125,10 @@ def validate_uploaded_file(file_bytes: bytes, original_filename: str) -> Dict[st
                 security_passed = False
                 is_valid = False
                 security_messages.append(f"Decompression bomb risk: image dimensions {w}x{h} exceed pixel limit.")
+            if getattr(img, "n_frames", 1) > MAX_PAGES:
+                security_passed = False
+                is_valid = False
+                security_messages.append(f"Image page count exceeds the maximum of {MAX_PAGES}.")
         except Exception as e:
             corruption_passed = False
             is_valid = False
@@ -114,6 +140,14 @@ def validate_uploaded_file(file_bytes: bytes, original_filename: str) -> Dict[st
             if page_count == 0:
                 corruption_passed = False
                 is_valid = False
+            elif page_count > MAX_PAGES:
+                security_passed = False
+                is_valid = False
+                security_messages.append(f"PDF page count exceeds the maximum of {MAX_PAGES}.")
+            elif doc.needs_pass:
+                security_passed = False
+                is_valid = False
+                security_messages.append("Password-protected or encrypted PDF detected.")
             else:
                 # Security Scan for PDF threats
                 pdf_text_raw = file_bytes.decode('latin1', errors='ignore')
@@ -135,33 +169,47 @@ def validate_uploaded_file(file_bytes: bytes, original_filename: str) -> Dict[st
             corruption_passed = False
             is_valid = False
 
-    elif ext in [".docx", ".xlsx"]:
+    elif ext in [".docx", ".pptx", ".xlsx"]:
         try:
             from io import BytesIO
             with zipfile.ZipFile(BytesIO(file_bytes)) as z:
                 # Zip bomb / decompression bomb protection check
                 total_uncompressed = sum(file_info.file_size for file_info in z.infolist())
                 compression_ratio = total_uncompressed / max(1, file_size)
-                if compression_ratio > 100:
+                if (
+                    compression_ratio > 100
+                    or total_uncompressed > MAX_ARCHIVE_UNCOMPRESSED_BYTES
+                ):
                     security_passed = False
                     is_valid = False
-                    security_messages.append(f"Suspicious zip compression ratio ({compression_ratio:.1f}x). Decompression bomb blocked.")
+                    security_messages.append(
+                        f"Suspicious Office archive expansion ({total_uncompressed} bytes, "
+                        f"{compression_ratio:.1f}x). Decompression bomb blocked."
+                    )
 
                 # Scan entries for macros or external targets
                 filenames = z.namelist()
+                expected_package_file = {
+                    ".docx": "word/document.xml",
+                    ".pptx": "ppt/presentation.xml",
+                    ".xlsx": "xl/workbook.xml",
+                }[ext]
+                if "[Content_Types].xml" not in filenames or expected_package_file not in filenames:
+                    corruption_passed = False
+                    is_valid = False
                 for name in filenames:
-                    if "vbaProject.bin" in name.lower():
+                    if "vbaproject.bin" in name.lower():
                         security_passed = False
                         is_valid = False
                         security_messages.append("VBA Macro (vbaProject.bin) detected.")
-                    if "oleObject" in name.lower():
+                    if "oleobject" in name.lower():
                         security_passed = False
                         is_valid = False
                         security_messages.append("Embedded OLE Object detected.")
                     
                     if name.endswith(".rels"):
                         rels_content = z.read(name).decode('utf-8', errors='ignore')
-                        if 'TargetMode="External"' in rels_content:
+                        if 'targetmode="external"' in rels_content.lower():
                             security_passed = False
                             is_valid = False
                             security_messages.append("Dangerous external relationship target detected.")
@@ -172,20 +220,48 @@ def validate_uploaded_file(file_bytes: bytes, original_filename: str) -> Dict[st
             corruption_passed = False
             is_valid = False
 
-    elif ext in [".csv"]:
+    elif ext in [".doc", ".ppt", ".xls", ".msg"]:
         try:
-            text_content = file_bytes.decode('utf-8', errors='replace')
+            from io import BytesIO
+            import olefile
+
+            container = olefile.OleFileIO(BytesIO(file_bytes))
+            streams = {"/".join(parts).lower() for parts in container.listdir()}
+            if not streams:
+                corruption_passed = False
+                is_valid = False
+            if {"encryptioninfo", "encryptedpackage"}.issubset(
+                {stream.rsplit("/", 1)[-1] for stream in streams}
+            ):
+                security_passed = False
+                is_valid = False
+                security_messages.append("Encrypted Office document detected.")
+            container.close()
+        except Exception:
+            corruption_passed = False
+            is_valid = False
+
+    elif ext in [".csv", ".txt", ".md", ".html", ".htm", ".rtf", ".eml"]:
+        try:
+            text_content = file_bytes.decode('utf-8-sig', errors='replace')
+            if ext == ".rtf" and not text_content.lstrip().startswith("{\\rtf"):
+                corruption_passed = False
+                is_valid = False
+            if ext in {".eml"} and "\n" not in text_content and "\r" not in text_content:
+                corruption_passed = False
+                is_valid = False
             # Check for CSV formula injection indicators
-            lines = text_content.splitlines()
-            formula_count = 0
-            for line in lines[:100]:
-                parts = line.split(',')
-                for p in parts:
-                    clean_p = p.strip(' "\'\t\r\n')
-                    if clean_p.startswith(('=', '+', '-', '@')) and len(clean_p) > 1:
-                        formula_count += 1
-            if formula_count > 0:
-                security_messages.append(f"Neutralized {formula_count} potential CSV formula injection cells (prefixed with = + - @).")
+            if ext == ".csv":
+                lines = text_content.splitlines()
+                formula_count = 0
+                for line in lines[:100]:
+                    parts = line.split(',')
+                    for p in parts:
+                        clean_p = p.strip(' "\'\t\r\n')
+                        if clean_p.startswith(('=', '+', '-', '@')) and len(clean_p) > 1:
+                            formula_count += 1
+                if formula_count > 0:
+                    security_messages.append(f"Neutralized {formula_count} potential CSV formula injection cells (prefixed with = + - @).")
         except Exception:
             corruption_passed = False
             is_valid = False
@@ -224,7 +300,7 @@ def validate_uploaded_file(file_bytes: bytes, original_filename: str) -> Dict[st
     # Store file under UUID if valid
     saved_path = None
     file_id = str(uuid.uuid4())
-    if is_valid:
+    if is_valid and store:
         safe_name = sanitize_filename(original_filename)
         job_dir = UPLOADS_DIR / file_id
         job_dir.mkdir(parents=True, exist_ok=True)
@@ -269,4 +345,3 @@ def mask_pii_entities(text: str) -> str:
     masked = re.sub(r'\b(?:\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}\b', '[REDACTED_PHONE]', masked)
 
     return masked
-

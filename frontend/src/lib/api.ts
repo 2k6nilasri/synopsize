@@ -36,6 +36,14 @@ export async function getJobResult(jobId: string) {
   return res.json();
 }
 
+export async function getAuditLog() {
+  const res = await fetch(`${API_BASE}/audit`);
+  if (!res.ok) {
+    throw new Error("Failed to fetch audit log");
+  }
+  return res.json();
+}
+
 export function getExportUrl(jobId: string, format: "md" | "json" | "txt" | "zip") {
   return `${API_BASE}/jobs/${jobId}/export?format=${format}`;
 }
@@ -81,11 +89,15 @@ export async function saveCorrection(data: {
   return res.json();
 }
 
-export async function applyImageTool(toolName: string, file: File, extraParams: Record<string, any> = {}) {
+export async function applyImageTool(
+  toolName: string,
+  file: File,
+  extraParams: Record<string, string | number | boolean> = {}
+) {
   const formData = new FormData();
   formData.append("file", file);
   Object.keys(extraParams).forEach((k) => {
-    formData.append(k, extraParams[k]);
+    formData.append(k, String(extraParams[k]));
   });
   
   const res = await fetch(`${API_BASE}/tools/${toolName}`, {

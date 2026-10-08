@@ -9,7 +9,20 @@ export interface BoundingBox {
 
 export interface DocumentBlock {
   id: string;
-  type: "heading" | "paragraph" | "table" | "image" | "chart" | "equation" | "header_footer";
+  type:
+    | "heading"
+    | "paragraph"
+    | "list"
+    | "table"
+    | "figure"
+    | "image"
+    | "chart"
+    | "caption"
+    | "equation"
+    | "header_footer"
+    | "footnote"
+    | "form_field"
+    | "code";
   reading_order: number;
   page: number;
   bbox: number[];
@@ -18,6 +31,17 @@ export interface DocumentBlock {
   confidence_level: ConfidenceLevel;
   extractor: string;
   source_reference: string;
+  bbox_unit?: string;
+  origin?: "top-left";
+  spans_pages?: number[];
+  routing?: { tried: string; confidence: number }[];
+  provenance?: {
+    file_sha256: string;
+    source_format: string;
+    page_type: string;
+    timestamp: string;
+  };
+  flags?: string[];
   metadata?: {
     chart_type?: string;
     series?: any[];
@@ -31,6 +55,7 @@ export interface DocumentBlock {
 
 export interface DocumentPage {
   page_number: number;
+  page_type?: string;
   width: number;
   height: number;
   image_data: string;
@@ -85,6 +110,7 @@ export interface JobResult {
   created_at: string;
   processing_time_seconds: number;
   pages: DocumentPage[];
+  child_documents?: JobResult[];
   markdown: string;
   ocr_text: string;
   chunks: SemanticChunk[];

@@ -1,11 +1,37 @@
 import cv2
 import numpy as np
 import base64
+import os
+import shutil
+from pathlib import Path
 from typing import Dict, Any, List
 import pytesseract
 
 from app.core.tools.deskew import deskew_image
 from app.core.tools.denoise import denoise_image
+
+
+def _configure_tesseract() -> None:
+    executable = shutil.which("tesseract")
+    if executable:
+        pytesseract.pytesseract.tesseract_cmd = executable
+        return
+
+    if os.name == "nt":
+        for program_directory in (
+            os.environ.get("ProgramFiles"),
+            os.environ.get("ProgramFiles(x86)"),
+        ):
+            if not program_directory:
+                continue
+            candidate = Path(program_directory) / "Tesseract-OCR" / "tesseract.exe"
+            if candidate.is_file():
+                pytesseract.pytesseract.tesseract_cmd = str(candidate)
+                return
+
+
+_configure_tesseract()
+
 
 def process_image_file(image_bytes: bytes, filename: str) -> Dict[str, Any]:
     """
@@ -76,35 +102,21 @@ def process_image_file(image_bytes: bytes, filename: str) -> Dict[str, Any]:
                     current_block_lines = []
                     current_block_conf = []
     except Exception as e:
-        # Graceful fallback if Tesseract is not found on path
         blocks = [
             {
                 "id": "block-1-1",
-                "type": "heading",
+                "type": "paragraph",
                 "reading_order": 1,
                 "page": 1,
-                "bbox": [50, 40, int(w * 0.8), 90],
-                "content": f"Extracted Image Document: {filename}",
-                "confidence": 0.98,
-                "extractor": "Image Engine",
-                "source_reference": "image_page_1_heading"
-            },
-            {
-                "id": "block-1-2",
-                "type": "paragraph",
-                "reading_order": 2,
-                "page": 1,
-                "bbox": [50, 100, int(w * 0.9), int(h * 0.4)],
-                "content": f"Image dimension: {w}x{h}px. High resolution OCR scanned text processed through noise reduction and automated deskew filters.",
-                "confidence": 0.92,
+                "bbox": [0, 0, w, h],
+                "content": "",
+                "confidence": 0.0,
                 "extractor": "Tesseract OCR",
-                "source_reference": "image_page_1_para"
+                "source_reference": "image_page_1_ocr_failure",
+                "flags": ["needs_review"],
             }
         ]
-        ocr_lines = [
-            "Line 1 [0.98]: Extracted Image Document",
-            "Line 2 [0.92]: High resolution OCR scanned text processed cleanly."
-        ]
+        ocr_lines = [f"OCR failed for {filename}: {e}"]
 
     return {
         "total_pages": 1,

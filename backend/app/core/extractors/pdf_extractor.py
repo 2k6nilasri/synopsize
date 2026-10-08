@@ -107,21 +107,21 @@ def process_pdf_document(pdf_bytes: bytes, filename: str) -> Dict[str, Any]:
             if ry0 < h * 0.08 or ry1 > h * 0.93:
                 block_kind = "header_footer"
                 conf = 0.96
-            # Detect Heading
-            elif len(clean_btext.splitlines()) == 1 and len(clean_btext) < 60:
-                block_kind = "heading"
-                conf = 0.98
-            # Detect Equation
+            # Detect equations before short single-line headings.
             elif any(sym in clean_btext for sym in ['=', '∑', '∫', '√', 'α', 'β', 'λ', '\\sum']):
                 block_kind = "equation"
                 eq_meta = extract_equation_latex(clean_btext)
                 clean_btext = eq_meta["latex"]
                 conf = eq_meta["confidence"]
+            # Detect Heading
+            elif len(clean_btext.splitlines()) == 1 and len(clean_btext) < 60:
+                block_kind = "heading"
+                conf = 0.98
             else:
                 block_kind = "paragraph"
                 conf = 0.94 if len(clean_btext) > 20 else 0.78
 
-            page_blocks.append({
+            block = {
                 "id": f"block-{page_num}-{reading_order}",
                 "type": block_kind,
                 "reading_order": reading_order,
@@ -131,7 +131,10 @@ def process_pdf_document(pdf_bytes: bytes, filename: str) -> Dict[str, Any]:
                 "confidence": round(conf, 2),
                 "extractor": "PyMuPDF Text Engine",
                 "source_reference": f"pdf_page_{page_num}_text_{bno}"
-            })
+            }
+            if block_kind == "equation":
+                block["metadata"] = {"latex": clean_btext}
+            page_blocks.append(block)
             reading_order += 1
             page_ocr_lines.append(f"Line {reading_order} [{conf:.2f}]: {clean_btext[:80]}")
 
@@ -215,4 +218,3 @@ def process_pdf_document(pdf_bytes: bytes, filename: str) -> Dict[str, Any]:
         "pages": pages_output,
         "ocr_text": "\n".join(all_ocr_lines)
     }
-
